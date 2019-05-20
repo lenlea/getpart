@@ -246,6 +246,8 @@ def non_max_suppression(prediction, conf_thres=0.5, nms_thres=0.4):
         image_pred = image_pred[(-score).argsort()]
         class_confs, class_preds = image_pred[:, 5:].max(1, keepdim=True)
         detections = torch.cat((image_pred[:, :5], class_confs.float(), class_preds.float()), 1)
+        
+        print(detections)
         # Perform non-maximum suppression
         keep_boxes = []
         while detections.size(0):
@@ -254,8 +256,12 @@ def non_max_suppression(prediction, conf_thres=0.5, nms_thres=0.4):
             # Indices of boxes with lower confidence scores, large IOUs and matching labels
             invalid = large_overlap & label_match
             weights = detections[invalid, 4:5]
+            
+            print(weights)
             # Merge overlapping bboxes by order of confidence
             detections[0, :4] = (weights * detections[invalid, :4]).sum(0) / weights.sum()
+            print(detections[0, :4])
+            
             keep_boxes += [detections[0]]
             detections = detections[~invalid]
         if keep_boxes:
