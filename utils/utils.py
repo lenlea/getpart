@@ -186,7 +186,7 @@ def bbox_wh_iou(wh1, wh2):
     w1, h1 = wh1[0], wh1[1]
     w2, h2 = wh2[0], wh2[1]
     inter_area = torch.min(w1, w2) * torch.min(h1, h2)
-    union_area = w1 * h1 + 1e-16
+    union_area = w1 * h1 + w2*h2 - inter_area + 1e-16
     return inter_area / union_area
 
 
@@ -218,7 +218,7 @@ def bbox_iou(box1, box2, x1y1x2y2=True):
     b1_area = (b1_x2 - b1_x1 + 1) * (b1_y2 - b1_y1 + 1)
     b2_area = (b2_x2 - b2_x1 + 1) * (b2_y2 - b2_y1 + 1)
 
-    iou = inter_area / b1_area
+    iou = inter_area / (b1_area + b2_area - inter_area + 1e-16)
 
     return iou
 
