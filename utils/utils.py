@@ -249,7 +249,7 @@ def non_max_suppression(prediction, conf_thres=0.5, nms_thres=0.4):
         # 获取每个box的类别的预测结果和编号(0~79), 使用了keepdim, 否则shape维数会减一(dim指定的维度会消失)
         # class_conf的shape为[n, 1], 代表n个box的score
         # class_pred的shape为[n, 1], 代表n个box的类别编号
-        class_conf, class_pred = torch.max(image_pred[:, 5：], 1, keepdim=True)
+        class_conf, class_pred = torch.max(image_pred[:, 5:], 1, keepdim=True)
 
         # 对以上结果进行汇总, shape为[n,7]: (x1,y1,x2,y2, obj_conf, class_conf, class_pred)
         detections = torch.cat((image_pred[:, :5], class_conf.float(), class_pred.float()), 1)
