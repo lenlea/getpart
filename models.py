@@ -43,6 +43,28 @@ def create_modules(module_defs):
                 modules.add_module(f"batch_norm_{module_i}", nn.BatchNorm2d(filters, momentum=0.9, eps=1e-5))
             if module_def["activation"] == "leaky":
                 modules.add_module(f"leaky_{module_i}", nn.LeakyReLU(0.1))
+                
+        elif module_def["type"]=="depthwise":
+            bn = int(module_def["batch_normalize"])
+            modules.add_module(
+                f"dep_wise_{module_i}",
+                nn.Conv2d(
+                    in_channels=output_filters[-1],
+                    out_channels=output_filters[-1],
+                    kernel_size=3,
+                    padding=1,
+                    bias=not bn,
+                    groups=output_filters[-1],
+                ),
+            )            
+            if bn:
+                modules.add_module(f"batch_norm_{module_i}", nn.BatchNorm2d(filters, momentum=0.9, eps=1e-5))
+            if module_def["activation"] == "leaky":
+                modules.add_module(f"leaky_{module_i}", nn.LeakyReLU(0.1)) 
+        elif module_def["type"]=="se":
+            inp_dim = int(module_def["input_dim"])
+            se=SELayer(inp_dim)
+            modules.add_module(f"se_{module_i}", se)            
 
         elif module_def["type"] == "maxpool":
             kernel_size = int(module_def["size"])
@@ -82,7 +104,23 @@ def create_modules(module_defs):
 
     return hyperparams, module_list
 
+class SELayer(nn.Module):
+    def __init__(self, channel, reduction=16):
+        super(SELayer, self).__init__()
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.fc = nn.Sequential(
+            nn.Linear(channel, channel // reduction, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(channel // reduction, channel, bias=False),
+            nn.Sigmoid()
+        )
 
+    def forward(self, x):
+        b, c, _, _ = x.size()
+        y = self.avg_pool(x).view(b, c)
+        y = self.fc(y).view(b, c, 1, 1)
+        return x * y.expand_as(x)
+    
 class Upsample(nn.Module):
     """ nn.Upsample is deprecated """
 
@@ -180,7 +218,7 @@ class YOLOLayer(nn.Module):
         if targets is None:
             return output, 0
         else:
-            iou_scores, class_mask, obj_mask, noobj_mask, tx, ty, tw, th, tcls = build_targets(
+            iou_scores, class_mask, obj_mask, noobj_mask, tx, ty, tw, th, tcls, tconf = build_targets(
                 pred_boxes=pred_boxes,
                 pred_cls=pred_cls,
                 target=targets,
@@ -188,16 +226,11 @@ class YOLOLayer(nn.Module):
                 ignore_thres=self.ignore_thres,
             )
 
-            if not obj_mask.any():
-                total_loss = self.noobj_scale * self.bce_loss(pred_conf[noobj_mask], tconf[noobj_mask])
-                return output, total_loss
-
             # Loss : Mask outputs to ignore non-existing objects (except with conf. loss)
             loss_x = self.mse_loss(x[obj_mask], tx[obj_mask])
             loss_y = self.mse_loss(y[obj_mask], ty[obj_mask])
             loss_w = self.mse_loss(w[obj_mask], tw[obj_mask])
             loss_h = self.mse_loss(h[obj_mask], th[obj_mask])
-            tconf = obj_mask.float()
             loss_conf_obj = self.bce_loss(pred_conf[obj_mask], tconf[obj_mask])
             loss_conf_noobj = self.bce_loss(pred_conf[noobj_mask], tconf[noobj_mask])
             loss_conf = self.obj_scale * loss_conf_obj + self.noobj_scale * loss_conf_noobj
@@ -272,18 +305,21 @@ class Darknet(nn.Module):
         """Parses and loads the weights stored in 'weights_path'"""
 
         # Open the weights file
-        fp = open(weights_path, "rb")
-        header = np.fromfile(fp, dtype=np.int32, count=5)  # First five are header values
+        with open(weights_path, "rb") as f:
+            header = np.fromfile(f, dtype=np.int32, count=5)  # First five are header values
+            self.header_info = header  # Needed to write header when saving weights
+            self.seen = header[3]  # number of images seen during training
+            weights = np.fromfile(f, dtype=np.float32)  # The rest are weights
 
-        # Needed to write header when saving weights
-        self.header_info = header
-
-        self.seen = header[3]
-        weights = np.fromfile(fp, dtype=np.float32)  # The rest are weights
-        fp.close()
+        # Establish cutoff for loading backbone weights
+        cutoff = None
+        if "darknet53.conv.74" in weights_path:
+            cutoff = 75
 
         ptr = 0
         for i, (module_def, module) in enumerate(zip(self.module_defs, self.module_list)):
+            if i == cutoff:
+                break
             if module_def["type"] == "convolutional":
                 conv_layer = module[0]
                 if module_def["batch_normalize"]:
@@ -318,7 +354,7 @@ class Darknet(nn.Module):
                 conv_layer.weight.data.copy_(conv_w)
                 ptr += num_w
 
-    def save_weights(self, path, cutoff=-1):
+    def save_darknet_weights(self, path, cutoff=-1):
         """
             @:param path    - path of the new weights file
             @:param cutoff  - save layers between 0 and cutoff (cutoff = -1 -> all are saved)
